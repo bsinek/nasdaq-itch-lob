@@ -11,8 +11,15 @@ from PIL import Image, ImageDraw, ImageFont
 FONT_CANDIDATES = ["/System/Library/Fonts/Menlo.ttc", "/System/Library/Fonts/Monaco.ttf"]
 BG = (13, 17, 23)
 COLORS = {"A": (248, 113, 113), "B": (74, 222, 128), "-": (250, 204, 21),
-          "l": (103, 232, 249)}  # asks red, bids green, spread yellow, tape cyan
-DEFAULT = (230, 237, 243)
+          "~": (96, 165, 250), "O": (232, 121, 249)}  # asks red, bids green,
+DEFAULT = (230, 237, 243)                             # rules yellow, mid blue, OFI magenta
+TAPE_UP, TAPE_DN, TAPE_MID = (74, 222, 128), (248, 113, 113), (103, 232, 249)
+
+
+def line_color(line: str):
+    if line.startswith("T "):
+        return TAPE_UP if "▲" in line else TAPE_DN if "▼" in line else TAPE_MID
+    return COLORS.get(line[:1], DEFAULT)
 
 
 def main():
@@ -40,8 +47,7 @@ def main():
         img = Image.new("RGB", size, BG)
         d = ImageDraw.Draw(img)
         for i, line in enumerate(t):
-            d.text((12, 12 + i * ch), line, font=font,
-                   fill=COLORS.get(line[:1], DEFAULT))
+            d.text((12, 12 + i * ch), line, font=font, fill=line_color(line))
         imgs.append(img.quantize(colors=64))
     out.parent.mkdir(parents=True, exist_ok=True)
     imgs[0].save(out, save_all=True, append_images=imgs[1:], duration=80, loop=0,
