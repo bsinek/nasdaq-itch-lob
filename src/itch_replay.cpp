@@ -102,6 +102,10 @@ int main(int argc, char** argv) {
   std::deque<std::pair<uint64_t, double>> mids;     // (ts, mid), pruned to 60s
   std::deque<Tape> tape;                            // newest first, 6 kept
   std::deque<Candle> candles;                       // oldest first, 44 kept
+  // aggressor-classified trades within the candle window, for the volume
+  // profile drawn to the right of the candles (hidden-order trades excluded)
+  struct FlowTrade { uint64_t ts; double px, sh; char dir; };
+  std::deque<FlowTrade> flow;
   uint64_t candle_idx = 0;
   uint64_t prev_trade_ts = 0;
   double ofi_scale = 1.0;
@@ -124,7 +128,9 @@ int main(int argc, char** argv) {
       const char dir = (pa && lt.px >= pa) ? '^' : (pb && lt.px <= pb) ? 'v' : '.';
       tape.push_front({lt.ts, lt.px, lt.sh, dir});
       if (tape.size() > 6) tape.pop_back();
+      if (dir != '.') flow.push_back({lt.ts, lt.px / 1e4, double(lt.sh), dir});
     }
+    while (!flow.empty() && flow.front().ts + 44 * candle_ns < ts) flow.pop_front();
 
     if (b.has_bbo()) {
       const uint32_t nb_ = b.bid.best().price, nqb = b.bid.best().shares;
@@ -177,8 +183,25 @@ int main(int argc, char** argv) {
     std::string f;
     f.reserve(8192);
     char line[224];
-    std::snprintf(line, sizeof line, "%-6s %s  x%.0f   msgs %llu\n", want.c_str(),
-                  fmt_ts(ts).c_str(), speed, (unsigned long long)r.messages());
+    // header: session clock, speed, last trade, message rate in market time
+    static uint64_t hdr_prev_msgs = 0, hdr_prev_ts = 0;
+    double rate = 0;
+    if (hdr_prev_ts && ts > hdr_prev_ts)
+      rate = double(r.messages() - hdr_prev_msgs) / (double(ts - hdr_prev_ts) / 1e9);
+    hdr_prev_msgs = r.messages();
+    hdr_prev_ts = ts;
+    const char* la = tape.empty()          ? ""
+                     : tape[0].dir == '^' ? "▲"
+                     : tape[0].dir == 'v' ? "▼"
+                                          : "·";
+    if (!tape.empty())
+      std::snprintf(line, sizeof line,
+                    "%-6s %s  x%-4.0f last %.2f%s  feed %.0fk msg/s  total %llu\n",
+                    want.c_str(), fmt_ts(ts).c_str(), speed, tape[0].px / 1e4, la, rate / 1e3,
+                    (unsigned long long)r.messages());
+    else
+      std::snprintf(line, sizeof line, "%-6s %s  x%.0f   msgs %llu\n", want.c_str(),
+                    fmt_ts(ts).c_str(), speed, (unsigned long long)r.messages());
     f += line;
 
     // midprice + 60s sparkline (sampled per frame)
@@ -229,12 +252,28 @@ int main(int argc, char** argv) {
       if (hi <= lo) hi = lo + 1e-4;
       const int R = 8;
       const double band = (hi - lo) / R;
-      std::snprintf(line, sizeof line, "C %.0fs candles                       high %.2f\n",
-                    candle_s, hi);
+      // volume profile: traded shares per price band over the candle window,
+      // split into aggressive buys (solid) and sells (hatched); shares the
+      // candle pane's price axis so bulges align with the prices they traded at
+      double bv[R], sv[R];
+      double rowmax = 1;
+      for (int row = 0; row < R; ++row) {
+        const double top = hi - band * row, bot = top - band;
+        bv[row] = sv[row] = 0;
+        for (auto& t : flow) {
+          if (t.px > bot && (t.px <= top || (row == 0 && t.px <= top + 1e-9)))
+            (t.dir == '^' ? bv[row] : sv[row]) += t.sh;
+        }
+        rowmax = std::max(rowmax, bv[row] + sv[row]);
+      }
+      std::snprintf(line, sizeof line,
+                    "C %.0fs candles  %.2f-%.2f      (right: traded volume by price)\n",
+                    candle_s, lo, hi);
       f += line;
       for (int row = 0; row < R; ++row) {
         const double top = hi - band * row, bot = top - band;
         std::string cl = "C ";
+        size_t ncand = 0;
         for (auto& k : candles) {
           const double bhi = std::max(k.o, k.c), blo = std::min(k.o, k.c);
           const bool up = k.c >= k.o;
@@ -246,11 +285,18 @@ int main(int argc, char** argv) {
           } else {
             cl += ' ';
           }
+          ++ncand;
         }
-        if (row == R - 1) {
-          std::snprintf(line, sizeof line, "   low %.2f", lo);
-          cl += line;
-        }
+        for (size_t i = ncand; i < 46; ++i) cl += ' ';
+        const int W = 22;
+        const double tot = bv[row] + sv[row];
+        const int len = int(tot / rowmax * W + 0.5);
+        const int g = tot > 0 ? int(len * bv[row] / tot + 0.5) : 0;
+        if (tty_render) cl += "\x1b[32m";
+        for (int i = 0; i < g; ++i) cl += "█";
+        if (tty_render) cl += "\x1b[0m\x1b[31m";
+        for (int i = 0; i < len - g; ++i) cl += "▓";
+        if (tty_render) cl += "\x1b[0m";
         cl += '\n';
         f += cl;
       }
@@ -282,8 +328,10 @@ int main(int argc, char** argv) {
 
     f += "----------------------------------------------------\n";
     for (const auto& t : tape) {
-      const char* c = t.dir == '^' ? c_up : t.dir == 'v' ? c_dn : "";
-      const char* arrow = t.dir == '^' ? "▲" : t.dir == 'v' ? "▼" : " ";
+      // gray '·' = printed inside the spread against a hidden (non-displayed)
+      // order; the aggressor's side is genuinely unknowable from the feed
+      const char* c = t.dir == '^' ? c_up : t.dir == 'v' ? c_dn : tty_render ? "\x1b[90m" : "";
+      const char* arrow = t.dir == '^' ? "▲" : t.dir == 'v' ? "▼" : "·";
       std::snprintf(line, sizeof line, "%sT %s %s %9.2f x %-6u%s\n", c, fmt_ts(t.ts).c_str(),
                     arrow, t.px / 1e4, t.sh, c_off);
       f += line;

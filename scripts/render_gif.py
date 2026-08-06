@@ -11,9 +11,10 @@ from PIL import Image, ImageDraw, ImageFont
 FONT_CANDIDATES = ["/System/Library/Fonts/Menlo.ttc", "/System/Library/Fonts/Monaco.ttf"]
 BG = (13, 17, 23)
 COLORS = {"A": (248, 113, 113), "B": (74, 222, 128), "-": (250, 204, 21),
-          "~": (96, 165, 250), "O": (232, 121, 249)}  # asks red, bids green,
+          "~": (96, 165, 250), "O": (232, 121, 249),
+          "G": (74, 222, 128), "R": (248, 113, 113)}  # asks red, bids green,
 DEFAULT = (230, 237, 243)                             # rules yellow, mid blue, OFI magenta
-TAPE_UP, TAPE_DN, TAPE_MID = (74, 222, 128), (248, 113, 113), (103, 232, 249)
+TAPE_UP, TAPE_DN, TAPE_MID = (74, 222, 128), (248, 113, 113), (139, 148, 158)
 
 
 CANDLE = {"█": (74, 222, 128), "▓": (248, 113, 113), "│": (110, 118, 129)}

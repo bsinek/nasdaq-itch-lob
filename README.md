@@ -6,7 +6,13 @@ ground truth, and an ML layer (XGBoost) built on the book's output. No LOBSTER,
 no FI-2010, no pre-processed datasets: the input is the exchange's binary wire
 format, ~370–420M messages per day.
 
-![AAPL book, first seconds after the 09:30 open](docs/assets/book.gif)
+![AAPL replay dashboard, first minutes after the 09:30 open](docs/assets/book.gif)
+
+*Replay dashboard (`itch-replay`): midprice sparkline and live 1 s
+order-flow-imbalance gauge (the ML layer's main feature), 5 s candlesticks with
+a buy/sell volume profile on a shared price axis, the price ladder, and a trade
+tape with aggressor direction — gray `·` prints are hidden-order executions
+inside the spread, whose aggressor is unknowable from the feed.*
 
 ## Measured results
 
@@ -105,8 +111,13 @@ Or `scripts/run_all.sh` for the whole sequence (~30 min download + ~10 min
 compute). The replay demo (entirely separate from the benchmarks):
 
 ```sh
-./build/itch-replay data/01302019.NASDAQ_ITCH50.gz AAPL --speed 5 --start 09:30:00
+./build/itch-replay data/01302019.NASDAQ_ITCH50.gz AAPL --speed 60 --start 09:30:00 --duration 23400
 ```
+
+Flags: `--speed N` (replay rate multiple), `--duration SEC` of market time
+(23400 = full 09:30–16:00 session), `--candle SEC` (candle interval),
+`--depth N` (ladder levels per side). The dashboard is ~30 rows; use a tall
+terminal window.
 
 ## Design notes
 
