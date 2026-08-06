@@ -36,6 +36,12 @@ messages, 11.2 GB decompressed (streamed — never written to disk).
 | Midprice model, out-of-sample R² (1 s horizon) | **0.0006** pooled, −0.000–0.002 per symbol | `ml/midprice.py` |
 | Fill-probability model, out-of-sample AUC | **0.754** (queue+distance logistic baseline: 0.730) | `ml/fills.py` |
 
+![bench run, checked vs unchecked build](docs/assets/bench.gif)
+
+*A single real run of both builds (animated from the tool's verbatim output).
+Individual runs drift a few percent with thermal state — the table above
+quotes medians of 3; the checked-vs-unchecked gap stays ~6–7 % regardless.*
+
 Latency = `Handler::on_message` (field decode + dispatch + book update),
 excluding stream inflation; distribution measured per message over all 368 M.
 The Apple Silicon counter ticks at 24 MHz (41.7 ns), so p50 sits below one
