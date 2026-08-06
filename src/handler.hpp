@@ -97,9 +97,14 @@ class Handler {
       case 'X': handle_cancel(m); break;
       case 'D': handle_delete(m); break;
       case 'U': handle_replace(m); break;
-      case 'P':  // hidden-liquidity match: counts toward volume, never touches the book
-        vol_raw_[f_locate(m)] += be32(m + 20);
+      case 'P': {  // hidden-liquidity match: counts toward volume, never touches the book
+        const uint16_t loc = f_locate(m);
+        const uint32_t sh = be32(m + 20);
+        vol_raw_[loc] += sh;
+        const int sym = sym_of_locate_[loc];
+        if (sym >= 0) last_trade_[sym] = {be32(m + 32), sh, f_ts(m)};
         break;
+      }
       case 'Q': handle_cross(m); break;
       case 'S': {
         const char ev = char(m[11]);
@@ -151,6 +156,8 @@ class Handler {
   uint64_t snapshots_written() const { return n_snaps_; }
   uint64_t order_rows() const { return order_rows_.size(); }
   const Book& book(int s) const { return books_[s]; }
+  struct LastTrade { uint32_t px, sh; uint64_t ts; };
+  const LastTrade& last_trade(int s) const { return last_trade_[s]; }
   int locate_of_sym(int s) const { return sym_locate_[s]; }
   uint64_t last_ts() const { return last_ts_; }
   uint64_t sys_event_ts(char ev) const { return sys_event_ts_[uint8_t(ev)]; }
@@ -199,7 +206,7 @@ class Handler {
       if (tracked(loc)) ++v_exec_bad_;
       return;
     }
-    apply_exec(it, sh, f_ts(m), true);
+    apply_exec(it, sh, f_ts(m), true, it->second.price);
   }
 
   void handle_exec_px(const uint8_t* m) {
@@ -212,13 +219,14 @@ class Handler {
       if (tracked(loc)) ++v_exec_bad_;
       return;
     }
-    apply_exec(it, sh, f_ts(m), printable);
+    apply_exec(it, sh, f_ts(m), printable, be32(m + 32));
   }
 
   void apply_exec(std::unordered_map<uint64_t, Order>::iterator it, uint32_t sh,
-                  uint64_t ts, bool printable) {
+                  uint64_t ts, bool printable, uint32_t trade_px) {
     Order& o = it->second;
     const int sym = sym_of_locate_[o.locate];
+    last_trade_[sym] = {trade_px, sh, ts};
     if (o.shares < sh) ++v_exec_bad_; else ++v_exec_ok_;
     const bool full = o.shares <= sh;
     const auto rr = books_[sym].side(o.side).remove(o.price, sh, full);
@@ -384,6 +392,7 @@ class Handler {
   std::array<uint32_t, kNSyms> open_px_{}, close_px_{};
   uint64_t last_ts_ = 0;
   std::array<uint64_t, 256> sys_event_ts_{};
+  std::array<LastTrade, kNSyms> last_trade_{};
 
   // validation
   std::array<uint64_t, 256> count_{};
