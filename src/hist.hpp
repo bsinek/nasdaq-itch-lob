@@ -1,4 +1,5 @@
 #pragma once
+#include <cmath>
 #include <cstdint>
 #include <vector>
 
@@ -20,7 +21,8 @@ class Hist {
   }
 
   uint64_t pct(double p) const {
-    const uint64_t target = uint64_t(p * double(n_));
+    if (n_ == 0) return 0;
+    const uint64_t target = uint64_t(std::ceil(p * double(n_)));  // nearest-rank
     uint64_t acc = 0;
     for (uint64_t i = 0; i < kMaxNs; ++i) {
       acc += bins_[i];

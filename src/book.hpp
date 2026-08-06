@@ -20,6 +20,7 @@ class BookSide {
 
   // Mutators return true when the top-5 levels changed.
   bool add(uint32_t px, uint32_t sh) {
+    if (sh == 0) return false;  // never create a phantom zero-share level
     size_t i = 0;
     const size_t n = lv_.size();
     while (i < n && better(lv_[i].price, px)) ++i;
@@ -33,21 +34,24 @@ class BookSide {
   }
 
   // Removes shares from the level at px; drop_order also decrements the order
-  // count (full cancel/delete/final execution). Returns {found, top5_changed}.
-  struct RemoveResult { bool found; bool top5; };
+  // count (full cancel/delete/final execution). deficit reports a removal
+  // larger than the level held (clamped to 0) so callers can count the
+  // inconsistency instead of it being silently masked.
+  struct RemoveResult { bool found; bool top5; bool deficit; };
   RemoveResult remove(uint32_t px, uint32_t sh, bool drop_order) {
     const size_t n = lv_.size();
     for (size_t i = 0; i < n; ++i) {
       if (lv_[i].price == px) {
         Level& L = lv_[i];
-        L.shares = L.shares >= sh ? L.shares - sh : 0;
+        const bool deficit = L.shares < sh;
+        L.shares = deficit ? 0 : L.shares - sh;
         if (drop_order && L.count) --L.count;
         if (L.shares == 0) lv_.erase(lv_.begin() + i);
-        return {true, i < 5};
+        return {true, i < 5, deficit};
       }
       if (better(px, lv_[i].price)) break;  // px would sort above: not present
     }
-    return {false, false};
+    return {false, false, false};
   }
 
   bool empty() const { return lv_.empty(); }

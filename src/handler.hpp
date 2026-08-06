@@ -3,6 +3,7 @@
 #include <cstdio>
 #include <cstring>
 #include <string>
+#include <sys/stat.h>
 #include <unordered_map>
 #include <vector>
 
@@ -24,7 +25,9 @@ struct Order {
 };
 
 #pragma pack(push, 1)
-// One record per event that changed the top-5 of a tracked book. 96 bytes.
+// One record per event that changed the top-5 of a tracked book; a U replace
+// emits a single post-replace record (the intermediate removed-only state
+// never existed at the exchange). 96 bytes.
 struct SnapRec {
   uint64_t ts;       // ns since midnight
   uint16_t sym;      // index into kSymbols
@@ -81,6 +84,7 @@ class Handler {
   void enable_export(const std::string& dir) {
     exporting_ = true;
     export_dir_ = dir;
+    ::mkdir(dir.c_str(), 0755);  // best-effort; fopen below reports real failures
     snap_f_ = std::fopen((dir + "/snapshots.bin").c_str(), "wb");
     if (!snap_f_) { std::perror("snapshots.bin"); std::exit(2); }
     std::setvbuf(snap_f_, nullptr, _IOFBF, 4u << 20);
@@ -188,12 +192,16 @@ class Handler {
   }
 
   // Shared by A/F and the new leg of U. reason: 1 add, 5 replace.
+  // extra_top5 lets U report its remove leg's top-5 change through the single
+  // post-replace snapshot (a U is atomic at the exchange; emitting the
+  // intermediate removed-but-not-readded state would record a book state that
+  // never existed).
   void add_order(int sym, uint16_t loc, uint64_t ref, char side, uint32_t sh,
-                 uint32_t px, uint64_t ts, uint8_t reason) {
+                 uint32_t px, uint64_t ts, uint8_t reason, bool extra_top5 = false) {
     Book& b = books_[sym];
     if (exporting_) maybe_record_order(sym, b, loc, ref, side, px, sh, ts);
     orders_.emplace(ref, Order{loc, uint8_t(side), 0, px, sh});
-    const bool t5 = b.side(side).add(px, sh);
+    const bool t5 = b.side(side).add(px, sh) || extra_top5;
     after_mutation(sym, reason, ts, t5);
   }
 
@@ -230,7 +238,7 @@ class Handler {
     if (o.shares < sh) ++v_exec_bad_; else ++v_exec_ok_;
     const bool full = o.shares <= sh;
     const auto rr = books_[sym].side(o.side).remove(o.price, sh, full);
-    if (!rr.found) ++v_book_missing_;
+    if (!rr.found || rr.deficit) ++v_book_missing_;
     if (printable) vol_book_[sym] += sh;
     if (exporting_) note_exec(it->first, sh, ts);
     if (full) {
@@ -255,7 +263,7 @@ class Handler {
     if (o.shares < sh) ++v_mod_bad_; else ++v_mod_ok_;
     const bool full = o.shares <= sh;
     const auto rr = books_[sym].side(o.side).remove(o.price, sh, full);
-    if (!rr.found) ++v_book_missing_;
+    if (!rr.found || rr.deficit) ++v_book_missing_;
     if (full) {
       if (exporting_) note_death(it->first, f_ts(m), 'X');
       orders_.erase(it);
@@ -276,7 +284,7 @@ class Handler {
     Order& o = it->second;
     const int sym = sym_of_locate_[o.locate];
     const auto rr = books_[sym].side(o.side).remove(o.price, o.shares, true);
-    if (!rr.found) ++v_book_missing_;
+    if (!rr.found || rr.deficit) ++v_book_missing_;
     if (exporting_) note_death(it->first, f_ts(m), 'X');
     orders_.erase(it);
     after_mutation(sym, 4, f_ts(m), rr.top5);
@@ -293,14 +301,13 @@ class Handler {
     const Order o = it->second;  // copy: side/locate survive the erase
     const int sym = sym_of_locate_[o.locate];
     const auto rr = books_[sym].side(o.side).remove(o.price, o.shares, true);
-    if (!rr.found) ++v_book_missing_;
+    if (!rr.found || rr.deficit) ++v_book_missing_;
     if (exporting_) note_death(it->first, f_ts(m), 'R');
     orders_.erase(it);
-    if (rr.top5) after_mutation(sym, 5, f_ts(m), true);
     const uint64_t new_ref = be64(m + 19);
     const uint32_t sh = be32(m + 27);
     const uint32_t px = be32(m + 31);
-    add_order(sym, o.locate, new_ref, char(o.side), sh, px, f_ts(m), 5);
+    add_order(sym, o.locate, new_ref, char(o.side), sh, px, f_ts(m), 5, rr.top5);
   }
 
   void handle_cross(const uint8_t* m) {

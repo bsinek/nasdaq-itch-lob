@@ -121,9 +121,32 @@ int main() {
   CHECK(h.nasdaq_volume(0) == vol_before + 510);
   CHECK(b.ask.best().shares == ask_shares);
 
-  // book never went crossed; validation clean
+  // X cancel down to exactly zero must erase the order (order-erase-via-X path)
+  feed(add(20, 'B', 100, 1649500));
+  feed(cancel(20, 100));
+  CHECK(b.bid.find(1649500) == nullptr);
+  feed(exec(20, 10, 3));  // dead ref: must count as an exec mismatch
+  CHECK(h.exec_bad() == 1);
+
+  // U of a partially executed order must remove only the REMAINING shares
+  feed(add(21, 'S', 200, 1650400));
+  feed(exec(21, 50, 4));
+  CHECK(b.ask.find(1650400)->shares == 150);
+  feed(replace(21, 22, 150, 1650500));
+  CHECK(b.ask.find(1650400) == nullptr);        // old level fully cleared
+  CHECK(b.ask.find(1650500)->shares == 150);    // new leg resting
+  feed(del(22));
+
+  // negative-path counters: unknown refs on a tracked locate must count
+  const auto mod_bad_before = h.mod_bad();
+  feed(cancel(999, 10));
+  feed(del(998));
+  feed(replace(997, 996, 100, 1650000));
+  CHECK(h.mod_bad() == mod_bad_before + 3);
+
+  // book never went crossed; level accounting never went inconsistent
   for (int s = 0; s < kNSyms; ++s) CHECK(h.crossed_instants(s) == 0);
-  CHECK(h.exec_bad() == 0 && h.mod_bad() == 0 && h.book_missing() == 0);
+  CHECK(h.book_missing() == 0);
 
   // closing cross recorded
   feed(cross(2000, 1652500, 'C'));

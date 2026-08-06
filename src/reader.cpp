@@ -43,6 +43,13 @@ bool Reader::fill(size_t need) {
   return true;
 }
 
+void Reader::fail_short(uint16_t framed) const {
+  std::fprintf(stderr,
+               "framing error after %llu messages: framed length %u below minimum 12\n",
+               (unsigned long long)n_msgs_, framed);
+  std::exit(2);
+}
+
 void Reader::fail_framing(uint8_t type, uint16_t framed) const {
   std::fprintf(stderr,
                "framing error after %llu messages: type 0x%02x ('%c') framed len %u, spec len %u\n",

@@ -3,10 +3,14 @@
 Event contribution at snapshot n (P=best price, q=best size):
     e_n =  1{Pb_n >= Pb_{n-1}} qb_n - 1{Pb_n <= Pb_{n-1}} qb_{n-1}
          - 1{Pa_n <= Pa_{n-1}} qa_n + 1{Pa_n >= Pa_{n-1}} qa_{n-1}
-OFI(t, h) = sum of e_n over events in (t-h, t].
+OFI(t, h) = sum of e_n over events in (t-h, t] (inclusive=True) or
+[t-h, t) (inclusive=False).
 
-All lookups here are backward-only (searchsorted side='right' on event
-timestamps <= t), so joined features can never see past the query time.
+Lookups never use events after t. The boundary AT t matters when t is itself
+an event timestamp: an order's own insertion snapshot carries ts == ts_add,
+so joins keyed to order insertions must use inclusive=False to exclude the
+order's own (and any same-nanosecond) events. Grid-sampled queries whose
+times don't collide with event timestamps are unaffected either way.
 """
 import numpy as np
 
@@ -28,10 +32,11 @@ class OfiSeries:
         self.csum = np.concatenate([[0.0], np.cumsum(e)])
         self.mid = (pb + pa) / 2.0
 
-    def ofi(self, t: np.ndarray, horizon_ns: int) -> np.ndarray:
-        """OFI over (t - horizon, t] for each query time t (ns)."""
-        hi = np.searchsorted(self.ts, t, side="right")
-        lo = np.searchsorted(self.ts, t - horizon_ns, side="right")
+    def ofi(self, t: np.ndarray, horizon_ns: int, inclusive: bool = True) -> np.ndarray:
+        """OFI over (t-h, t] (inclusive) or [t-h, t) (exclusive) per query t (ns)."""
+        side = "right" if inclusive else "left"
+        hi = np.searchsorted(self.ts, t, side=side)
+        lo = np.searchsorted(self.ts, t - horizon_ns, side=side)
         return self.csum[hi] - self.csum[lo]
 
     def mid_at(self, t: np.ndarray) -> np.ndarray:

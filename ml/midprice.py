@@ -72,31 +72,37 @@ def r2(y, p):
 
 def main():
     train_dir, test_dir = sys.argv[1], sys.argv[2]
-    Xtr, ytr, _, _ = build_day(train_dir)
+    _, _, tr_rows, tr_targets = build_day(train_dir)
     Xte, yte, sym_rows, sym_targets = build_day(test_dir)
-    print(f"train {Xtr.shape[0]:,} samples ({train_dir}), "
+
+    # early stopping on a chronological tail: the last 20% of EACH symbol's
+    # day (rows are time-ordered within a symbol), so every symbol appears in
+    # both fit and eval — the test day is never touched during fit
+    fit_X, fit_y, ev_X, ev_y = [], [], [], []
+    for Xs, ys in zip(tr_rows, tr_targets):
+        c = int(len(ys) * 0.8)
+        fit_X.append(Xs[:c]); fit_y.append(ys[:c])
+        ev_X.append(Xs[c:]); ev_y.append(ys[c:])
+    fit_X, fit_y = np.vstack(fit_X), np.concatenate(fit_y)
+    ev_X, ev_y = np.vstack(ev_X), np.concatenate(ev_y)
+    print(f"train {len(fit_y):,}+{len(ev_y):,} samples ({train_dir}), "
           f"test {Xte.shape[0]:,} samples ({test_dir})")
 
-    # early stopping on the train day's final 20% (by time within each symbol,
-    # approximated by row order) — the test day is never touched during fit
-    n = len(ytr)
-    cut = int(n * 0.8)
     model = xgb.XGBRegressor(
         n_estimators=600, max_depth=6, learning_rate=0.05, subsample=0.8,
         colsample_bytree=0.8, early_stopping_rounds=30, eval_metric="rmse",
         n_jobs=8, random_state=7)
-    model.fit(Xtr[:cut], ytr[:cut], eval_set=[(Xtr[cut:], ytr[cut:])], verbose=False)
+    model.fit(fit_X, fit_y, eval_set=[(ev_X, ev_y)], verbose=False)
 
     pred = model.predict(Xte)
     print(f"\nout-of-sample R^2 (mid change over next 1s, in ticks): "
           f"{r2(yte, pred):.4f}")
-    print(f"baseline (predict 0): R^2 = 0.0000 by construction")
-    off = 0
+    print("reference: the zero predictor scores R^2 ~ 0 here only because the "
+          "mean 1s mid change is ~0 (it is not exactly 0 by construction)")
     print("\nper-symbol out-of-sample R^2:")
     for s, (Xs, ys) in enumerate(zip(sym_rows, sym_targets)):
         ps = model.predict(Xs)
         print(f"  {SYMBOLS[s]:5} {r2(ys, ps):8.4f}   ({len(ys):,} samples)")
-        off += len(ys)
 
     import matplotlib
     matplotlib.use("Agg")

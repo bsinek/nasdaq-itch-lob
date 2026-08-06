@@ -4,7 +4,7 @@ A C++ feed handler for **raw Nasdaq TotalView-ITCH 5.0** binary data — full-da
 parse, limit-order-book reconstruction, validation against the stream's own
 ground truth, and an ML layer (XGBoost) built on the book's output. No LOBSTER,
 no FI-2010, no pre-processed datasets: the input is the exchange's binary wire
-format, ~370–420M messages per day.
+format, ~368–422M messages per day.
 
 ![AAPL replay dashboard, first minutes after the 09:30 open](docs/assets/book.gif)
 
@@ -23,17 +23,17 @@ messages, 11.2 GB decompressed (streamed — never written to disk).
 
 | Metric | Value | Command |
 |---|---|---|
-| Throughput, end-to-end (incl. gzip inflate) | **20.2 M msg/s** | `itch-parse bench` (median of 3) |
-| Throughput, parse + book update only | **55.8 M msg/s** | `itch-parse bench` (median of 3) |
-| Per-message latency, mean | **17.9 ns** | derived: parse+book time / messages |
+| Throughput, end-to-end (incl. gzip inflate) | **19.7 M msg/s** | `itch-parse bench` (median of 3) |
+| Throughput, parse + book update only | **51.8 M msg/s** | `itch-parse bench` (median of 3) |
+| Per-message latency, mean | **19.3 ns** | derived: parse+book time / messages |
 | Per-message latency, p50 | **< 42 ns** (below timer tick) | `itch-parse latency` |
-| Per-message latency, p99 / p99.9 | **291 ns / 1.04 µs** | `itch-parse latency` |
+| Per-message latency, p99 / p99.9 | **250 ns / 1.04 µs** | `itch-parse latency` |
 | Execution match rate (both days) | **100.000000 %** (492,275 + 273,503 execs) | `itch-parse export` → `validation.json` |
 | Modify match rate (both days) | **100.000000 %** (5.37 M + 5.73 M msgs) | same |
 | Crossed-book instants in regular session | **0** (all 8 symbols, both days) | same |
-| Closing cross vs official close | **16/16 exact to the cent** | `scripts/check_closes.py` |
-| Midprice model, out-of-sample R² (1 s horizon) | **0.0017** pooled, 0.001–0.045 per symbol | `ml/midprice.py` |
-| Fill-probability model, out-of-sample AUC | **0.740** (queue+distance logistic baseline: 0.725) | `ml/fills.py` |
+| Closing cross vs official close | **16/16 exact to the cent** | `scripts/check_closes.py` (both days) |
+| Midprice model, out-of-sample R² (1 s horizon) | **0.0006** pooled, −0.000–0.002 per symbol | `ml/midprice.py` |
+| Fill-probability model, out-of-sample AUC | **0.754** (queue+distance logistic baseline: 0.730) | `ml/fills.py` |
 
 Latency = `Handler::on_message` (field decode + dispatch + book update),
 excluding stream inflation; distribution measured per message over all 368 M.
@@ -54,52 +54,64 @@ reported by the tool, never subtracted.
   keep-books-for-what-you-trade pattern real handlers use; memory stays
   bounded via locate-code filtering at add time.
 - **Validates against the stream itself**: every execution/cancel/delete/replace
-  must apply cleanly to the reconstructed book (order present, shares
-  sufficient, price consistent). The Nasdaq closing cross *is* the official
-  close for Nasdaq-listed names, giving an exact external check — 16/16 across
-  both days. Venue volume vs consolidated tape is reported as a ratio
-  (19–37 %) because Nasdaq is one venue among ~16; an exact match is
-  impossible by construction.
-- **Exports the book's own output for ML**: L5 snapshots on every top-of-book
-  change (~7.4 M/day) and a lifecycle record for every resting order near the
-  touch (~3.5 M/day) with its fate — filled, cancelled, replaced, or alive at
-  close — read directly off the stream. That labeling is the L3-only part:
-  with price-level (L2) data you never learn an individual order's outcome.
+  must apply cleanly to the reconstructed book — order present, shares
+  sufficient, removal lands on the order's stored price level (executions are
+  implicitly at the stored order's price; no separate price comparison is
+  performed). The Nasdaq closing cross *is* the official close for
+  Nasdaq-listed names, giving an exact external check — 16/16 across both
+  days. Venue volume vs consolidated tape is reported as a ratio (19–37 %)
+  because Nasdaq is one venue among ~16; an exact match is impossible by
+  construction.
+- **Exports the book's own output for ML**: L5 snapshots on every top-5
+  change (~7.0–7.2 M/day; replaces emit one atomic post-replace state) and a
+  lifecycle record for every resting order near the touch (~3.4–3.7 M/day)
+  with its fate — filled, cancelled, replaced, or alive at close — read
+  directly off the stream. That labeling is the L3-only part: with
+  price-level (L2) data you never learn an individual order's outcome.
 
 ## ML results, honestly stated
 
-**Midprice (weak, expectedly).** Order-flow-imbalance features (Cont, Kukanov
-& Stoikov 2014) at 100 ms/1 s/5 s plus book shape, sampled every 500 ms,
-predicting the 1 s mid change. Trained on 01/30/2019, tested on 03/27/2019.
-Out-of-sample R² = **0.0017** pooled; per-symbol 0.0012 (AMZN) to 0.045
-(INTC) — higher for cheap, tick-constrained names, the pattern the OFI
-literature predicts. This weakness was pre-registered in the plan before
-training: R² near 0.001 at this horizon is the honest norm, and anything
-above 0.05 would have been treated as leakage and hunted, not reported.
+**Midprice (weak, expectedly — and weaker after an honesty fix).** Order-flow
+imbalance features (Cont, Kukanov & Stoikov 2014) at 100 ms/1 s/5 s plus book
+shape, sampled every 500 ms, predicting the 1 s mid change. Trained on
+01/30/2019, tested on 03/27/2019. Out-of-sample R² = **0.0006** pooled
+(per-symbol −0.000 to 0.002). An earlier build measured 0.0017: an export
+artifact was decomposing atomic replace messages into remove+re-add snapshot
+pairs, and the exaggerated OFI swings encoded quote-update direction. On the
+true book states the signal shrinks — kept and reported because that fragility
+*is* the result. The plan pre-registered R² ≈ 0.001–0.02 as the honest range
+and >0.05 as presumptive leakage; the final number sits at the very bottom of
+it.
 
-**Fill probability (the interesting half).** P(fill ≥ 1 share) for a resting
-order given its queue position at insertion. Test-day AUC **0.740** vs 0.725
-for a logistic baseline on queue position + distance alone; feature
-importances rank distance-from-touch, queue depth, and order size first, as
-they should. Calibration is monotone but over-confident at high predicted
-probabilities — the base fill rate halved between train day (10.3 %, an FOMC
-session) and test day (6.0 %), a real regime shift reported rather than
-tuned away. Plots: `docs/assets/fill_model.png`,
+**Fill probability (the interesting half).** P(fill ≥ 1 share while resting
+under its reference) for every recorded order, given its queue position at
+insertion — nothing dropped, so sample membership never conditions on the
+outcome (orders replaced before filling count as unfilled; the replacement is
+its own row). Test-day AUC **0.754** vs 0.730 for a logistic baseline on
+queue position + distance alone; feature importances rank distance-from-touch,
+level order-count, and order size first, as they should. Calibration is
+monotone but uniformly over-confident on the test day — the base fill rate
+fell from 9.4 % (train, an FOMC session) to 5.5 %, a real regime shift
+reported rather than tuned away. Plots: `docs/assets/fill_model.png`,
 `docs/assets/midprice_importance.png`.
 
 ## Reproduce
 
+Builds as-is on **macOS/Apple clang only** (mach timer + sysctl; zero C++
+dependencies beyond system zlib).
+
 ```sh
 scripts/get_spec.sh                      # official spec PDF (not committed)
 scripts/get_day.sh 01302019              # ~4.8 GB from emi.nasdaq.com
-scripts/get_day.sh 03272019              # ~5.0 GB
-make all && make test                    # zero C++ deps beyond system zlib
+scripts/get_day.sh 03272019              # ~5.5 GB
+make all && make test
 
-./build/itch-parse bench   data/01302019.NASDAQ_ITCH50.gz    # throughput
-./build/itch-parse latency data/01302019.NASDAQ_ITCH50.gz    # latency dist
+./build/itch-parse bench   data/01302019.NASDAQ_ITCH50.gz    # run 3x, quote the median
+./build/itch-parse latency data/01302019.NASDAQ_ITCH50.gz    # latency distribution
 ./build/itch-parse export  data/01302019.NASDAQ_ITCH50.gz data/exports/01302019
 ./build/itch-parse export  data/03272019.NASDAQ_ITCH50.gz data/exports/03272019
-python3 scripts/check_closes.py data/exports/01302019/validation.json
+python3 scripts/check_closes.py data/exports/01302019/validation.json   # 8/8 …
+python3 scripts/check_closes.py data/exports/03272019/validation.json   # … + 8/8 = 16/16
 
 python3 -m venv .venv && .venv/bin/pip install -r ml/requirements.txt
 brew install libomp                      # OpenMP runtime for the xgboost wheel
@@ -116,7 +128,7 @@ compute). The replay demo (entirely separate from the benchmarks):
 
 Flags: `--speed N` (replay rate multiple), `--duration SEC` of market time
 (23400 = full 09:30–16:00 session), `--candle SEC` (candle interval),
-`--depth N` (ladder levels per side). The dashboard is ~30 rows; use a tall
+`--depth N` (ladder levels per side). The dashboard is ~36 rows; use a tall
 terminal window.
 
 ## Design notes
@@ -147,17 +159,29 @@ terminal window.
   MoldUDP64/SoupBinTCP transport; no gap/heartbeat handling.
 - Hidden (non-displayed) liquidity appears only when it executes (P messages);
   the reconstructed book is the displayed book.
-- Replaced orders are dropped from the fill sample (continuation ambiguous);
-  orders alive at EOD count as unfilled.
+- Fill labels are per order *reference*: an order replaced before any fill
+  counts as unfilled and its replacement leg becomes a fresh row, so orders
+  near the close are right-censored (mechanically cancelled at end of day and
+  labeled unfilled).
+- The closing-cross external check depends on Yahoo's unauthenticated chart
+  API and a hardcoded split-factor table in `scripts/check_closes.py`; both
+  can rot (the split table drifts the day any tracked name splits again).
+- Builds on macOS/Apple Silicon only as shipped; the latency distribution
+  spans all messages including untracked-symbol dispatches (the p50 reflects
+  decode+dispatch; tracked book updates dominate the tail).
 - Replay pacing is sleep-based and coarse — it is a demo, and it is never the
   thing being benchmarked.
 
 ## Layout
 
 ```
-src/        messages.hpp reader book handler hist itch_parse itch_replay
+src/        messages.hpp reader book handler hist nanotime itch_parse itch_replay
 tests/      book_test.cpp — scripted sequences with known outcomes
 ml/         loaders ofi midprice fills (+ requirements.txt)
 scripts/    get_day get_spec check_closes render_gif run_all
 docs/       DECISIONS.md, plans/, assets/
 ```
+
+An independent three-way audit (C++/spec conformance, ML leakage, claim
+traceability) ran on 2026-08-06 before release; every finding was fixed or
+disclosed above, and the fixes are in the git history.

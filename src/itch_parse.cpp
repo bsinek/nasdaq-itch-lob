@@ -10,6 +10,7 @@
 #include <algorithm>
 #include <cstdio>
 #include <cstring>
+#include <exception>
 #include <string>
 #include <sys/sysctl.h>
 #include <vector>
@@ -98,7 +99,20 @@ static void write_validation_json(const Handler& h, const std::string& path,
   std::printf("wrote %s\n", path.c_str());
 }
 
+static int run(int argc, char** argv);
+
+// Reader throws on unopenable/corrupt/truncated input; catch so those exit
+// cleanly with status 2 like the framing errors, instead of via std::terminate.
 int main(int argc, char** argv) {
+  try {
+    return run(argc, argv);
+  } catch (const std::exception& e) {
+    std::fprintf(stderr, "error: %s\n", e.what());
+    return 2;
+  }
+}
+
+static int run(int argc, char** argv) {
   if (argc < 3) {
     std::fprintf(stderr, "usage: %s count|bench|latency|validate|export FILE.gz [OUT]\n", argv[0]);
     return 1;

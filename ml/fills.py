@@ -3,12 +3,16 @@
 
 One row per resting limit order added within 5 ticks of the same-side touch
 (see OrderRec in src/handler.hpp). Label = the order executed >= 1 share
-before dying / end of day — ground truth read directly off the stream, which
-is only possible with order-level (L3) data. Replaced orders are dropped
-(continuation ambiguous); orders alive at EOD count as unfilled.
+while resting under its reference number — ground truth read directly off the
+stream, which is only possible with order-level (L3) data. Orders replaced
+before any fill count as unfilled (observable: they never filled while
+resting; the replacement leg is recorded as its own fresh row), and orders
+still alive at the close count as unfilled. Nothing is dropped, so sample
+membership never depends on the outcome.
 
-Features are strictly from insertion time; the OFI join is backward-only and
-asserted as such. Train and test are separate days.
+Features are strictly from before insertion: the OFI join uses the exclusive
+[t-1s, t) window so the order's own insertion event (and any other event in
+the same nanosecond) is excluded. Train and test are separate days.
 
 Usage: .venv/bin/python ml/fills.py data/exports/01302019 data/exports/03272019
 """
@@ -28,12 +32,10 @@ FEATURES = ["queue_ahead", "dist_ticks", "size", "spread_ticks", "level_ct",
 
 def build_day(export_dir: str):
     orders = load_orders(export_dir)
-    orders = orders[orders["outcome"] != ord("R")]  # drop replaced (ambiguous)
     snaps = load_snapshots(export_dir)
 
     X = np.empty((len(orders), len(FEATURES)), dtype=np.float64)
     y = (orders["outcome"] == ord("F")).astype(np.int8)
-    row = 0
     for s in range(len(SYMBOLS)):
         o = orders[orders["sym"] == s]
         if not len(o):
@@ -42,10 +44,9 @@ def build_day(export_dir: str):
         sn = sn[(sn["bid_px"][:, 0] > 0) & (sn["ask_px"][:, 0] > 0)]
         series = OfiSeries(sn)
         t = o["ts_add"].astype(np.int64)
-        # leakage guard: the OFI window ends at the last event <= t
-        idx = np.searchsorted(series.ts, t, side="right") - 1
-        assert (series.ts[np.maximum(idx, 0)] <= t).all()
-        ofi1 = series.ofi(t, 1_000_000_000)
+        # exclusive window [t-1s, t): the snapshot written by this order's own
+        # insertion shares its timestamp and must not be a feature
+        ofi1 = series.ofi(t, 1_000_000_000, inclusive=False)
         is_bid = (o["side"] == ord("B")).astype(np.float64)
         # signed OFI: positive = flow supports the order's side
         ofi_signed = np.where(is_bid == 1, ofi1, -ofi1)
@@ -63,7 +64,6 @@ def build_day(export_dir: str):
         m = np.where(orders["sym"] == s)[0]
         for j, f in enumerate(FEATURES):
             X[m, j] = np.asarray(cols[f], dtype=np.float64)
-        row += len(o)
     return X, np.asarray(y), orders
 
 
