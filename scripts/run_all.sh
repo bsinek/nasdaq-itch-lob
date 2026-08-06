@@ -34,6 +34,6 @@ python3 scripts/check_closes.py "data/exports/$TEST/validation.json"
 
 # demo GIF (separate from benchmarks; paced replay)
 mkdir -p data/frames
-./build/itch-replay "data/$TRAIN.NASDAQ_ITCH50.gz" AAPL --speed 1 \
-  --start 09:30:00 --duration 10 --frames-dir data/frames
+./build/itch-replay "data/$TRAIN.NASDAQ_ITCH50.gz" AAPL --speed 30 \
+  --start 09:30:00 --duration 240 --frames-dir data/frames
 .venv/bin/python scripts/render_gif.py data/frames docs/assets/book.gif

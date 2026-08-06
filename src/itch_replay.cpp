@@ -1,15 +1,16 @@
-// itch-replay: timestamp-paced replay with a live terminal book view —
-// price ladder, scrolling trade tape with aggressor direction, rolling
-// midprice sparkline, and a live 1s order-flow-imbalance gauge (the same OFI
-// quantity ml/ofi.py feeds the models).
+// itch-replay: timestamp-paced replay with a live terminal dashboard —
+// midprice candlesticks, 60s sparkline, 1s order-flow-imbalance gauge (the
+// same OFI quantity ml/ofi.py feeds the models), price ladder, and a trade
+// tape with aggressor direction.
 // Demo only — pacing is sleep-based and coarse; benchmarks live in itch-parse.
 //
 //   itch-replay FILE.gz SYMBOL [--speed N] [--start HH:MM:SS] [--duration SEC]
-//               [--frames-dir DIR]
+//               [--depth N] [--candle SEC] [--frames-dir DIR]
 //
 // Fast-forwards (unpaced, no render) to --start, then replays honoring
 // inter-message timestamp deltas divided by --speed. --frames-dir writes
 // plain-text frames for scripts/render_gif.py instead of drawing to the tty.
+// The full dashboard is ~36 rows; make the terminal tall or lower --depth.
 #include <algorithm>
 #include <cstdio>
 #include <cstdlib>
@@ -44,11 +45,15 @@ struct Tape {
   char dir;  // '^' buyer lifted the ask, 'v' seller hit the bid, '.' inside
 };
 
+struct Candle {
+  double o, h, l, c;
+};
+
 int main(int argc, char** argv) {
   if (argc < 3) {
     std::fprintf(stderr,
-                 "usage: %s FILE.gz SYMBOL [--speed N] [--start HH:MM:SS] "
-                 "[--duration SEC] [--frames-dir DIR]\n",
+                 "usage: %s FILE.gz SYMBOL [--speed N] [--start HH:MM:SS] [--duration SEC] "
+                 "[--depth N] [--candle SEC] [--frames-dir DIR]\n",
                  argv[0]);
     return 1;
   }
@@ -56,6 +61,8 @@ int main(int argc, char** argv) {
   double speed = 1.0;
   uint64_t start_ns = 34'200'000'000'000ull;  // 09:30
   double duration_s = 30.0;
+  int depth = 8;
+  double candle_s = 5.0;
   std::string frames_dir;
   for (int i = 3; i < argc; ++i) {
     const std::string a = argv[i];
@@ -65,8 +72,11 @@ int main(int argc, char** argv) {
       std::sscanf(argv[++i], "%u:%u:%u", &hh, &mm, &ss);
       start_ns = (uint64_t(hh) * 3600 + mm * 60 + ss) * 1'000'000'000ull;
     } else if (a == "--duration" && i + 1 < argc) duration_s = std::atof(argv[++i]);
+    else if (a == "--depth" && i + 1 < argc) depth = std::atoi(argv[++i]);
+    else if (a == "--candle" && i + 1 < argc) candle_s = std::atof(argv[++i]);
     else if (a == "--frames-dir" && i + 1 < argc) frames_dir = argv[++i];
   }
+  depth = std::clamp(depth, 1, 10);
 
   int sym = -1;
   for (int s = 0; s < kNSyms; ++s)
@@ -81,15 +91,18 @@ int main(int argc, char** argv) {
   Reader r(path);
   Handler h;
   const uint64_t end_ns = start_ns + uint64_t(duration_s * 1e9);
+  const uint64_t candle_ns = uint64_t(candle_s * 1e9);
   uint64_t wall0 = 0, ts0 = 0, next_frame_wall = 0, n_frames = 0;
   const bool tty_render = frames_dir.empty();
   if (tty_render) std::fputs("\x1b[2J\x1b[?25l", stdout);
 
-  // live-view state (all display-only; the handler is untouched)
+  // live-view state (display-only; the handler is untouched)
   uint32_t pb = 0, qb = 0, pa = 0, qa = 0;          // previous L1
   std::deque<std::pair<uint64_t, double>> ofi_ev;   // (ts, e_n), pruned to 1s
   std::deque<std::pair<uint64_t, double>> mids;     // (ts, mid), pruned to 60s
   std::deque<Tape> tape;                            // newest first, 6 kept
+  std::deque<Candle> candles;                       // oldest first, 44 kept
+  uint64_t candle_idx = 0;
   uint64_t prev_trade_ts = 0;
   double ofi_scale = 1.0;
 
@@ -113,10 +126,10 @@ int main(int argc, char** argv) {
       if (tape.size() > 6) tape.pop_back();
     }
 
-    // OFI event on any top-of-book change (Cont-Kukanov-Stoikov e_n)
     if (b.has_bbo()) {
       const uint32_t nb_ = b.bid.best().price, nqb = b.bid.best().shares;
       const uint32_t na_ = b.ask.best().price, nqa = b.ask.best().shares;
+      // OFI event on any top-of-book change (Cont-Kukanov-Stoikov e_n)
       if (nb_ != pb || nqb != qb || na_ != pa || nqa != qa) {
         if (pb && pa) {
           const double e = (nb_ >= pb ? double(nqb) : 0.0) - (nb_ <= pb ? double(qb) : 0.0)
@@ -127,6 +140,20 @@ int main(int argc, char** argv) {
       }
       while (!ofi_ev.empty() && ofi_ev.front().first + 1'000'000'000ull < ts)
         ofi_ev.pop_front();
+
+      // midprice candles (interval --candle seconds of market time)
+      const double mid = (nb_ + na_) / 2e4;
+      const uint64_t idx = ts / candle_ns;
+      if (candles.empty() || idx != candle_idx) {
+        candle_idx = idx;
+        candles.push_back({mid, mid, mid, mid});
+        if (candles.size() > 44) candles.pop_front();
+      } else {
+        Candle& k = candles.back();
+        k.h = std::max(k.h, mid);
+        k.l = std::min(k.l, mid);
+        k.c = mid;
+      }
     }
 
     // pace: sleep until this message's wall-clock slot (coarse; demo only)
@@ -148,19 +175,18 @@ int main(int argc, char** argv) {
     const char* c_off = tty_render ? "\x1b[0m" : "";
 
     std::string f;
-    f.reserve(6144);
-    char line[192];
+    f.reserve(8192);
+    char line[224];
     std::snprintf(line, sizeof line, "%-6s %s  x%.0f   msgs %llu\n", want.c_str(),
                   fmt_ts(ts).c_str(), speed, (unsigned long long)r.messages());
     f += line;
 
-    // midprice sparkline over the last 60s (sampled per frame)
+    // midprice + 60s sparkline (sampled per frame)
     if (b.has_bbo()) {
       const double mid = (b.bid.best().price + b.ask.best().price) / 2e4;
       mids.emplace_back(ts, mid);
       while (!mids.empty() && mids.front().first + 60'000'000'000ull < ts) mids.pop_front();
-      static const char* blocks[9] = {" ", "▁", "▂", "▃", "▄",
-                                      "▅", "▆", "▇", "█"};
+      static const char* blocks[9] = {" ", "▁", "▂", "▃", "▄", "▅", "▆", "▇", "█"};
       double lo = 1e18, hi = -1e18;
       for (auto& [t_, v] : mids) { lo = std::min(lo, v); hi = std::max(hi, v); }
       std::string spark;
@@ -185,20 +211,55 @@ int main(int argc, char** argv) {
       ofi_scale = std::max(ofi_scale, std::fabs(s));
       const int half = 14;
       const int k = int(std::fabs(s) / ofi_scale * half + 0.5);
-      std::string g(size_t(half), ' ');
-      std::string neg = g, pos = g;
+      std::string neg(size_t(half), ' '), pos(size_t(half), ' ');
       if (s < 0) neg.replace(size_t(half - k), size_t(k), size_t(k), '#');
       else pos.replace(0, size_t(k), size_t(k), '#');
+      f += c_ofi;
       std::snprintf(line, sizeof line, "O OFI-1s [%s|%s] %+9.0f  (buy pressure ->)%s\n",
                     neg.c_str(), pos.c_str(), s, c_off);
-      f.insert(f.size(), c_ofi);
       f += line;
+    }
+
+    // candlestick pane: 8 rows x up to 44 candles of the midprice.
+    // '█' = body of an up candle, '▓' = body of a down candle, '│' = wick;
+    // colors are applied per glyph (tty here, scripts/render_gif.py for GIFs).
+    if (!candles.empty()) {
+      double lo = 1e18, hi = -1e18;
+      for (auto& k : candles) { lo = std::min(lo, k.l); hi = std::max(hi, k.h); }
+      if (hi <= lo) hi = lo + 1e-4;
+      const int R = 8;
+      const double band = (hi - lo) / R;
+      std::snprintf(line, sizeof line, "C %.0fs candles                       high %.2f\n",
+                    candle_s, hi);
+      f += line;
+      for (int row = 0; row < R; ++row) {
+        const double top = hi - band * row, bot = top - band;
+        std::string cl = "C ";
+        for (auto& k : candles) {
+          const double bhi = std::max(k.o, k.c), blo = std::min(k.o, k.c);
+          const bool up = k.c >= k.o;
+          if (bhi > bot && blo < top) {
+            cl += tty_render ? (up ? "\x1b[32m█\x1b[0m" : "\x1b[31m▓\x1b[0m")
+                             : (up ? "█" : "▓");
+          } else if (k.h > bot && k.l < top) {
+            cl += tty_render ? "\x1b[90m│\x1b[0m" : "│";
+          } else {
+            cl += ' ';
+          }
+        }
+        if (row == R - 1) {
+          std::snprintf(line, sizeof line, "   low %.2f", lo);
+          cl += line;
+        }
+        cl += '\n';
+        f += cl;
+      }
     }
     f += "----------------------------------------------------\n";
 
     uint32_t max_sh = 1;
-    const size_t na = b.ask.depth() < 10 ? b.ask.depth() : 10;
-    const size_t nb2 = b.bid.depth() < 10 ? b.bid.depth() : 10;
+    const size_t na = b.ask.depth() < size_t(depth) ? b.ask.depth() : size_t(depth);
+    const size_t nb2 = b.bid.depth() < size_t(depth) ? b.bid.depth() : size_t(depth);
     for (size_t i = 0; i < na; ++i) max_sh = std::max(max_sh, b.ask.at(i).shares);
     for (size_t i = 0; i < nb2; ++i) max_sh = std::max(max_sh, b.bid.at(i).shares);
     for (size_t i = na; i-- > 0;) {

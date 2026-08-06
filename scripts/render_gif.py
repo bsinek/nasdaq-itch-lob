@@ -16,6 +16,9 @@ DEFAULT = (230, 237, 243)                             # rules yellow, mid blue, 
 TAPE_UP, TAPE_DN, TAPE_MID = (74, 222, 128), (248, 113, 113), (103, 232, 249)
 
 
+CANDLE = {"█": (74, 222, 128), "▓": (248, 113, 113), "│": (110, 118, 129)}
+
+
 def line_color(line: str):
     if line.startswith("T "):
         return TAPE_UP if "▲" in line else TAPE_DN if "▼" in line else TAPE_MID
@@ -47,7 +50,13 @@ def main():
         img = Image.new("RGB", size, BG)
         d = ImageDraw.Draw(img)
         for i, line in enumerate(t):
-            d.text((12, 12 + i * ch), line, font=font, fill=line_color(line))
+            if line.startswith("C "):  # candle pane: per-glyph colors
+                for j, g in enumerate(line):
+                    if g != " ":
+                        d.text((12 + j * cw, 12 + i * ch), g, font=font,
+                               fill=CANDLE.get(g, DEFAULT))
+            else:
+                d.text((12, 12 + i * ch), line, font=font, fill=line_color(line))
         imgs.append(img.quantize(colors=64))
     out.parent.mkdir(parents=True, exist_ok=True)
     imgs[0].save(out, save_all=True, append_images=imgs[1:], duration=80, loop=0,
