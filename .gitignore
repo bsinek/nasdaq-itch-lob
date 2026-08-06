@@ -1,0 +1,7 @@
+data/
+build/
+docs/spec/
+.venv/
+__pycache__/
+*.o
+.DS_Store
