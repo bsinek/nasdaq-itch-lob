@@ -149,7 +149,13 @@ int main(int argc, char** argv) {
       std::fclose(ff);
     }
   }
-  if (tty_render) std::fputs("\x1b[?25h\n", stdout);
+  if (tty_render) {
+    std::fputs("\x1b[?25h\n", stdout);
+    std::printf("replay finished: %s played %.0fs of market time from %s (%llu msgs total). "
+                "Longer: --duration SECONDS (full day: 23400).\n",
+                want.c_str(), duration_s, fmt_ts(start_ns).c_str(),
+                (unsigned long long)r.messages());
+  }
   if (!frames_dir.empty())
     std::printf("wrote %llu frames to %s\n", (unsigned long long)n_frames, frames_dir.c_str());
   return 0;
