@@ -24,8 +24,9 @@ messages, 11.2 GB decompressed (streamed — never written to disk).
 | Metric | Value | Command |
 |---|---|---|
 | Throughput, end-to-end (incl. gzip inflate) | **19.7 M msg/s** | `itch-parse bench` (median of 3) |
-| Throughput, parse + book update only | **51.8 M msg/s** | `itch-parse bench` (median of 3) |
-| Per-message latency, mean | **19.3 ns** | derived: parse+book time / messages |
+| Throughput, parse + book update only | **52.2 M msg/s** | `itch-parse bench` (median of 3) |
+| — same, trusted-input build (checks compiled out) | **55.6 M msg/s** (safety costs 6.3 %) | `itch-parse-unchecked bench` |
+| Per-message latency, mean | **19.2 ns** | derived: parse+book time / messages |
 | Per-message latency, p50 | **< 42 ns** (below timer tick) | `itch-parse latency` |
 | Per-message latency, p99 / p99.9 | **250 ns / 1.04 µs** | `itch-parse latency` |
 | Execution match rate (both days) | **100.000000 %** (492,275 + 273,503 execs) | `itch-parse export` → `validation.json` |
@@ -107,6 +108,8 @@ scripts/get_day.sh 03272019              # ~5.5 GB
 make all && make test
 
 ./build/itch-parse bench   data/01302019.NASDAQ_ITCH50.gz    # run 3x, quote the median
+make build/itch-parse-unchecked                              # safety-cost comparison
+./build/itch-parse-unchecked bench data/01302019.NASDAQ_ITCH50.gz
 ./build/itch-parse latency data/01302019.NASDAQ_ITCH50.gz    # latency distribution
 ./build/itch-parse export  data/01302019.NASDAQ_ITCH50.gz data/exports/01302019
 ./build/itch-parse export  data/03272019.NASDAQ_ITCH50.gz data/exports/03272019
@@ -136,6 +139,13 @@ terminal window.
 - Single-threaded hot path: chunked zlib inflate → framing → switch dispatch →
   book update. Throughput is measured both end-to-end and with inflate time
   excluded (timed per 8 MB chunk), and both are reported.
+- The hot path carries always-on safety checks (frame validation, level-deficit
+  detection) the way a live handler would — untrusted input that desyncs a
+  parser corrupts the book, which costs more than a predicted-not-taken
+  branch. `make build/itch-parse-unchecked` compiles them out
+  (`-DITCH_UNCHECKED`) for a trusted-input build, so the price of safety is a
+  measured 6.3 %, not a guess. Bench-only: validation and export always use
+  the checked build.
 - Price levels are sorted vectors, best-at-front: activity clusters at the
   touch, so linear scans beat tree maps on real data. Order store is
   `std::unordered_map` (day-unique u64 refs), tracked symbols only.

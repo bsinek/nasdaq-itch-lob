@@ -21,12 +21,16 @@ class Reader {
   const uint8_t* next(uint16_t& len) {
     if (end_ - pos_ < 2 && !fill(2)) return nullptr;
     const uint16_t need = be16(buf_.data() + pos_);
-    // 12 = smallest spec message (S). A shorter frame (esp. 0) would leave the
-    // type byte unbacked by data and could false-pass the length check below.
-    if (need < 12) fail_short(need);
+    if constexpr (kChecked) {
+      // 12 = smallest spec message (S). A shorter frame (esp. 0) would leave
+      // the type byte unbacked by data and could false-pass the length check.
+      if (need < 12) fail_short(need);
+    }
     if (end_ - pos_ < size_t(2) + need && !fill(size_t(2) + need)) return nullptr;
     const uint8_t* m = buf_.data() + pos_;
-    if (kMsgLen[m[2]] != need) fail_framing(m[2], need);
+    if constexpr (kChecked) {
+      if (kMsgLen[m[2]] != need) fail_framing(m[2], need);
+    }
     pos_ += size_t(2) + need;
     len = need;
     ++n_msgs_;

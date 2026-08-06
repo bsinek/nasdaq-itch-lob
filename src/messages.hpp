@@ -5,6 +5,16 @@
 
 namespace itch {
 
+// Compile with -DITCH_UNCHECKED to strip hot-path safety checks (frame
+// validation, level-deficit tracking, zero-share guards) for a trusted-input
+// benchmark build. The default build keeps them; both numbers are reported in
+// the README. Never use the unchecked build for validation or export.
+#ifdef ITCH_UNCHECKED
+inline constexpr bool kChecked = false;
+#else
+inline constexpr bool kChecked = true;
+#endif
+
 // Message lengths (including the 1-byte type), transcribed from the official
 // Nasdaq TotalView-ITCH 5.0 specification (fetched 2026-08-06; docs/spec/ is
 // gitignored — scripts/get_spec.sh re-downloads it). Historical-file framing:

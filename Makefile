@@ -10,6 +10,11 @@ all: $(B)/itch-parse $(B)/itch-replay
 $(B)/itch-parse: src/itch_parse.cpp src/reader.cpp $(HDRS) | $(B)
 	$(CXX) $(CXXFLAGS) src/itch_parse.cpp src/reader.cpp $(LDLIBS) -o $@
 
+# Trusted-input benchmark build: hot-path safety checks compiled out.
+# bench/latency comparison only — never use for validation or export.
+$(B)/itch-parse-unchecked: src/itch_parse.cpp src/reader.cpp $(HDRS) | $(B)
+	$(CXX) $(CXXFLAGS) -DITCH_UNCHECKED src/itch_parse.cpp src/reader.cpp $(LDLIBS) -o $@
+
 $(B)/itch-replay: src/itch_replay.cpp src/reader.cpp $(HDRS) | $(B)
 	$(CXX) $(CXXFLAGS) src/itch_replay.cpp src/reader.cpp $(LDLIBS) -o $@
 

@@ -2,6 +2,8 @@
 #include <cstdint>
 #include <vector>
 
+#include "messages.hpp"
+
 namespace itch {
 
 struct Level {
@@ -20,7 +22,9 @@ class BookSide {
 
   // Mutators return true when the top-5 levels changed.
   bool add(uint32_t px, uint32_t sh) {
-    if (sh == 0) return false;  // never create a phantom zero-share level
+    if constexpr (kChecked) {
+      if (sh == 0) return false;  // never create a phantom zero-share level
+    }
     size_t i = 0;
     const size_t n = lv_.size();
     while (i < n && better(lv_[i].price, px)) ++i;
@@ -43,8 +47,13 @@ class BookSide {
     for (size_t i = 0; i < n; ++i) {
       if (lv_[i].price == px) {
         Level& L = lv_[i];
-        const bool deficit = L.shares < sh;
-        L.shares = deficit ? 0 : L.shares - sh;
+        bool deficit = false;
+        if constexpr (kChecked) {
+          deficit = L.shares < sh;
+          L.shares = deficit ? 0 : L.shares - sh;
+        } else {
+          L.shares -= sh;  // trusted input: cannot underflow
+        }
         if (drop_order && L.count) --L.count;
         if (L.shares == 0) lv_.erase(lv_.begin() + i);
         return {true, i < 5, deficit};
