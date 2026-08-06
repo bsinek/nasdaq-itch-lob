@@ -90,10 +90,16 @@ int main(int argc, char** argv) {
     if (now_ns() < next_frame_wall) continue;
     next_frame_wall += 80'000'000;  // 12.5 fps
 
+    // ANSI colors in the live view only; frame files stay plain for render_gif.py
+    const char* c_ask = tty_render ? "\x1b[31m" : "";
+    const char* c_bid = tty_render ? "\x1b[32m" : "";
+    const char* c_spr = tty_render ? "\x1b[33m" : "";
+    const char* c_tape = tty_render ? "\x1b[36m" : "";
+    const char* c_off = tty_render ? "\x1b[0m" : "";
     const Book& b = h.book(sym);
     std::string f;
     f.reserve(4096);
-    char line[128];
+    char line[160];
     std::snprintf(line, sizeof line, "%-6s %s  x%.0f   msgs %llu\n", want.c_str(),
                   fmt_ts(ts).c_str(), speed, (unsigned long long)r.messages());
     f += line;
@@ -105,24 +111,25 @@ int main(int argc, char** argv) {
     for (size_t i = 0; i < nb; ++i) max_sh = std::max(max_sh, b.bid.at(i).shares);
     for (size_t i = na; i-- > 0;) {
       const Level& L = b.ask.at(i);
-      std::snprintf(line, sizeof line, "A %9.2f %7u %-3u %s\n", L.price / 1e4, L.shares,
-                    L.count, bar(L.shares, max_sh, 24).c_str());
+      std::snprintf(line, sizeof line, "%sA %9.2f %7u %-3u %s%s\n", c_ask, L.price / 1e4,
+                    L.shares, L.count, bar(L.shares, max_sh, 24).c_str(), c_off);
       f += line;
     }
     if (b.has_bbo()) {
-      std::snprintf(line, sizeof line, "-------- spread %5.2f --------\n", b.spread() / 1e4);
+      std::snprintf(line, sizeof line, "%s-------- spread %5.2f --------%s\n", c_spr,
+                    b.spread() / 1e4, c_off);
       f += line;
     }
     for (size_t i = 0; i < nb; ++i) {
       const Level& L = b.bid.at(i);
-      std::snprintf(line, sizeof line, "B %9.2f %7u %-3u %s\n", L.price / 1e4, L.shares,
-                    L.count, bar(L.shares, max_sh, 24).c_str());
+      std::snprintf(line, sizeof line, "%sB %9.2f %7u %-3u %s%s\n", c_bid, L.price / 1e4,
+                    L.shares, L.count, bar(L.shares, max_sh, 24).c_str(), c_off);
       f += line;
     }
     const auto& t = h.last_trade(sym);
     if (t.ts) {
-      std::snprintf(line, sizeof line, "last trade %9.2f x %-6u %s\n", t.px / 1e4, t.sh,
-                    fmt_ts(t.ts).c_str());
+      std::snprintf(line, sizeof line, "%slast trade %9.2f x %-6u %s%s\n", c_tape, t.px / 1e4,
+                    t.sh, fmt_ts(t.ts).c_str(), c_off);
       f += line;
     }
 
